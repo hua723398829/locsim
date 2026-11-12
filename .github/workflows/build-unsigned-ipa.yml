@@ -11,37 +11,35 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Show Xcode version
-        run: xcodebuild -version
+      - name: Install Tools and Dependencies
+        run: |
+          # 安装 XcodeGen 来生成 xcodeproj
+          brew install xcodegen
+          
+          # 运行作者的依赖拉取脚本（如果有的话）
+          if [ -f "tools/fetch-vendor.sh" ]; then
+            echo "Running fetch-vendor.sh..."
+            bash tools/fetch-vendor.sh || echo "脚本执行失败，但尝试继续"
+          fi
+
+      - name: Generate Xcode Project
+        run: |
+          # 根据 project.yml 生成工程文件
+          xcodegen generate
+          echo "生成的工程文件列表："
+          ls -d *.xcodeproj
 
       - name: Build unsigned app
         run: |
           set -e
           
-          # 在整个仓库递归寻找工程文件（最多找 3 层深度）
-          WORKSPACE_FILE=$(find . -maxdepth 3 -name "*.xcworkspace" | head -n1)
-          PROJECT_FILE=$(find . -maxdepth 3 -name "*.xcodeproj" | head -n1)
-
-          if [ -n "$WORKSPACE_FILE" ]; then
-            PROJECT_ARGS="-workspace $WORKSPACE_FILE"
-            PROJECT_DIR=$(dirname "$WORKSPACE_FILE")
-          elif [ -n "$PROJECT_FILE" ]; then
-            PROJECT_ARGS="-project $PROJECT_FILE"
-            PROJECT_DIR=$(dirname "$PROJECT_FILE")
-          else
-            echo "❌ 未能找到 .xcworkspace 或 .xcodeproj"
-            echo "👇 当前仓库的完整文件结构如下，请截图发给我："
-            find . -maxdepth 3 -not -path "*/.*"
-            exit 1
-          fi
-
-          echo "✅ 找到工程文件，所在目录: $PROJECT_DIR"
-          echo "使用的工程参数: $PROJECT_ARGS"
+          # 此时根目录已经有了 .xcodeproj
+          PROJECT_FILE=$(find . -maxdepth 1 -name "*.xcodeproj" | head -n1)
+          PROJECT_ARGS="-project $PROJECT_FILE"
           
-          # 切换到工程文件所在的目录执行编译，避免路径报错
-          cd "$PROJECT_DIR"
+          echo "使用的工程参数: $PROJECT_ARGS"
 
-          # 自动读取第一个 scheme
+          # 自动读取 scheme
           SCHEME=$(xcodebuild -list $PROJECT_ARGS 2>/dev/null | awk '/Schemes:/{flag=1;next} flag && NF{print $1; exit}')
           echo "使用的 scheme: $SCHEME"
 
@@ -59,7 +57,6 @@ jobs:
       - name: Package unsigned IPA
         run: |
           set -e
-          # 全局寻找编译出来的 .app 文件
           APP=$(find . -name "*.app" -path "*/Release-iphoneos/*" | head -n1)
           if [ -z "$APP" ]; then
             echo "❌ 编译成功，但未找到 .app 文件"
