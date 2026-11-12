@@ -17,20 +17,32 @@ jobs:
       - name: Build unsigned app
         run: |
           set -e
+          
+          # 在整个仓库递归寻找工程文件（最多找 3 层深度）
+          WORKSPACE_FILE=$(find . -maxdepth 3 -name "*.xcworkspace" | head -n1)
+          PROJECT_FILE=$(find . -maxdepth 3 -name "*.xcodeproj" | head -n1)
 
-          # 自动识别工程文件（.xcworkspace 优先，否则用 .xcodeproj）
-          if ls *.xcworkspace >/dev/null 2>&1; then
-            PROJECT_ARGS="-workspace $(ls -d *.xcworkspace | head -n1)"
-          elif ls *.xcodeproj >/dev/null 2>&1; then
-            PROJECT_ARGS="-project $(ls -d *.xcodeproj | head -n1)"
+          if [ -n "$WORKSPACE_FILE" ]; then
+            PROJECT_ARGS="-workspace $WORKSPACE_FILE"
+            PROJECT_DIR=$(dirname "$WORKSPACE_FILE")
+          elif [ -n "$PROJECT_FILE" ]; then
+            PROJECT_ARGS="-project $PROJECT_FILE"
+            PROJECT_DIR=$(dirname "$PROJECT_FILE")
           else
-            echo "未找到 .xcworkspace 或 .xcodeproj"
+            echo "❌ 未能找到 .xcworkspace 或 .xcodeproj"
+            echo "👇 当前仓库的完整文件结构如下，请截图发给我："
+            find . -maxdepth 3 -not -path "*/.*"
             exit 1
           fi
 
+          echo "✅ 找到工程文件，所在目录: $PROJECT_DIR"
+          echo "使用的工程参数: $PROJECT_ARGS"
+          
+          # 切换到工程文件所在的目录执行编译，避免路径报错
+          cd "$PROJECT_DIR"
+
           # 自动读取第一个 scheme
           SCHEME=$(xcodebuild -list $PROJECT_ARGS 2>/dev/null | awk '/Schemes:/{flag=1;next} flag && NF{print $1; exit}')
-          echo "使用的工程参数: $PROJECT_ARGS"
           echo "使用的 scheme: $SCHEME"
 
           xcodebuild \
@@ -47,7 +59,12 @@ jobs:
       - name: Package unsigned IPA
         run: |
           set -e
-          APP=$(find build/Build/Products/Release-iphoneos -maxdepth 1 -name "*.app" | head -n1)
+          # 全局寻找编译出来的 .app 文件
+          APP=$(find . -name "*.app" -path "*/Release-iphoneos/*" | head -n1)
+          if [ -z "$APP" ]; then
+            echo "❌ 编译成功，但未找到 .app 文件"
+            exit 1
+          fi
           echo "找到 App: $APP"
           mkdir -p Payload
           cp -R "$APP" Payload/
