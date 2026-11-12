@@ -1,3 +1,4 @@
+
 name: Build unsigned IPA
 
 on:
@@ -13,88 +14,147 @@ jobs:
 
       - name: Install Tools and Dependencies
         run: |
-          # 安装 XcodeGen
+          set -e
+
           brew install xcodegen
-          
-          # 运行作者的依赖拉取脚本
+
+          echo "===== Xcode Environment ====="
+          xcodebuild -version
+          swift --version
+
+          echo "===== Fetch Vendor ====="
           if [ -f "tools/fetch-vendor.sh" ]; then
-            echo "Running fetch-vendor.sh..."
-            bash tools/fetch-vendor.sh || echo "脚本执行失败，但尝试继续"
-          fi
-          
-          # 手动确保 Frameworks/IDevice.xcframework 存在
-          mkdir -p Frameworks
-          if [ ! -d "Frameworks/IDevice.xcframework" ]; then
-            echo "Frameworks/IDevice.xcframework not found. Trying to fix..."
-            FOUND_ZIP=$(find . -name "idevice-xcframework*.zip" | head -n 1)
-            if [ -n "$FOUND_ZIP" ]; then
-              echo "Found zip: $FOUND_ZIP, extracting..."
-              unzip -q "$FOUND_ZIP" -d temp_extract
-              XC_FRAMEWORK=$(find temp_extract -name "*.xcframework" | head -n 1)
-              if [ -n "$XC_FRAMEWORK" ]; then
-                mv "$XC_FRAMEWORK" "Frameworks/IDevice.xcframework"
-                echo "✅ Successfully placed IDevice.xcframework"
-              fi
-            else
-              FOUND_DIR=$(find . -name "*.xcframework" -type d | head -n 1)
-              if [ -n "$FOUND_DIR" ]; then
-                echo "Found existing dir: $FOUND_DIR, moving..."
-                mv "$FOUND_DIR" "Frameworks/IDevice.xcframework"
-                echo "✅ Successfully placed IDevice.xcframework"
-              else
-                echo "❌ Error: Cannot find any xcframework zip or folder!"
-                ls -la
-              fi
-            fi
+            bash tools/fetch-vendor.sh
           else
-             echo "✅ IDevice.xcframework already exists in Frameworks/"
+            echo "ERROR: tools/fetch-vendor.sh not found"
+            exit 1
           fi
+
+          echo "===== Prepare IDevice ====="
+          mkdir -p Frameworks
+
+          if [ ! -d "Frameworks/IDevice.xcframework" ]; then
+            FOUND_ZIP=$(find . -name "idevice-xcframework*.zip" -print -quit)
+
+            if [ -n "$FOUND_ZIP" ]; then
+              mkdir -p temp_extract
+              unzip -q "$FOUND_ZIP" -d temp_extract
+
+              XC_FRAMEWORK=$(find temp_extract -name "IDevice.xcframework" -type d -print -quit)
+
+              if [ -z "$XC_FRAMEWORK" ]; then
+                XC_FRAMEWORK=$(find temp_extract -name "*.xcframework" -type d -print -quit)
+              fi
+
+              if [ -z "$XC_FRAMEWORK" ]; then
+                echo "ERROR: No xcframework found in archive"
+                exit 1
+              fi
+
+              cp -R "$XC_FRAMEWORK" Frameworks/IDevice.xcframework
+            fi
+          fi
+
+          if [ ! -d "Frameworks/IDevice.xcframework" ]; then
+            FOUND_DIR=$(find . -name "IDevice.xcframework" -type d ! -path "./Frameworks/*" -print -quit)
+
+            if [ -n "$FOUND_DIR" ]; then
+              cp -R "$FOUND_DIR" Frameworks/IDevice.xcframework
+            fi
+          fi
+
+          test -d Frameworks/IDevice.xcframework
+          test -f Frameworks/IDevice.xcframework/Info.plist
+
+          echo "IDevice framework ready"
 
       - name: Patch Source Code
         run: |
-          # 1. 全局升级最低版本为 18.0（防止其他找不到新 API 的报错）
-          sed -i '' 's/17.4/18.0/g' project.yml || true
+          set -e
 
-          # 2. 直接重写控制中心按钮的 UI 文件，把它变成一个普通的文本视图
-          # 这样就绕过了 AppIntent 必须符合 OpenIntent 的严格编译检查
-          cat > LocSimWidgets/LocationControls.swift << 'EOF'
-          import SwiftUI
-          import WidgetKit
-          import AppIntents
+          echo "===== Restore original LocationControls.swift ====="
 
-          @available(iOS 18.0, *)
-          struct LocationControls: ControlWidget {
-              var body: some ControlWidgetConfiguration {
-                  StaticControlConfiguration(kind: "com.rockykln.locsim.controls.last") {
-                      Text("LocSim")
-                  }
-              }
-          }
-          EOF
+          git show HEAD:LocSimWidgets/LocationControls.swift \
+            > LocSimWidgets/LocationControls.swift
+
+          echo "===== Patch IntentModes ====="
+
+          python3 <<'PY'
+          from pathlib import Path
+          import re
+
+          matches = list(Path(".").rglob("ControlIntents.swift"))
+
+          if not matches:
+              raise SystemExit("ERROR: ControlIntents.swift not found")
+
+          for path in matches:
+              text = path.read_text()
+
+              pattern = (
+                  r'(?m)^[ \t]*@available\(iOS 26\.0,\s*\*\)'
+                  r'[ \t]*\n'
+                  r'[ \t]*static var supportedModes: IntentModes'
+                  r'[^\n]*\n?'
+              )
+
+              new_text, count = re.subn(pattern, "", text)
+
+              if count:
+                  path.write_text(new_text)
+                  print(f"Patched: {path}")
+              else:
+                  print(f"WARNING: IntentModes declaration not matched in {path}")
+
+              if "IntentModes" in path.read_text():
+                  raise SystemExit(
+                      f"ERROR: IntentModes still exists in {path}"
+                  )
+
+          PY
+
+          echo "===== Verify Control Widgets ====="
+
+          grep -n "SetLastLocationControl" \
+            LocSimWidgets/LocationControls.swift
+
+          grep -n "ClearLocationControl" \
+            LocSimWidgets/LocationControls.swift
+
+          echo "===== Verify changes ====="
+
+          git diff --check
+          git diff --stat
 
       - name: Generate Xcode Project
         run: |
+          set -e
+
           xcodegen generate
-          echo "生成的工程文件列表："
-          ls -d *.xcodeproj
+
+          PROJECT_FILE=$(find . -maxdepth 1 -name "*.xcodeproj" -print -quit)
+
+          if [ -z "$PROJECT_FILE" ]; then
+            echo "ERROR: Xcode project not generated"
+            exit 1
+          fi
+
+          echo "Project: $PROJECT_FILE"
+
+          xcodebuild -list -project "$PROJECT_FILE"
 
       - name: Build unsigned app
         run: |
           set -e
-          
-          PROJECT_FILE=$(find . -maxdepth 1 -name "*.xcodeproj" | head -n1)
-          PROJECT_ARGS="-project $PROJECT_FILE"
-          
-          echo "使用的工程参数: $PROJECT_ARGS"
 
-          SCHEME=$(xcodebuild -list $PROJECT_ARGS 2>/dev/null | awk '/Schemes:/{flag=1;next} flag && NF{print $1; exit}')
-          echo "使用的 scheme: $SCHEME"
+          PROJECT_FILE=$(find . -maxdepth 1 -name "*.xcodeproj" -print -quit)
 
           xcodebuild \
-            $PROJECT_ARGS \
-            -scheme "$SCHEME" \
+            -project "$PROJECT_FILE" \
+            -scheme LocSim \
             -configuration Release \
             -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
             -derivedDataPath build \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
@@ -104,16 +164,31 @@ jobs:
       - name: Package unsigned IPA
         run: |
           set -e
-          APP=$(find . -name "*.app" -path "*/Release-iphoneos/*" | head -n 1)
-          if [ -z "$APP" ]; then
-            echo "❌ 编译成功，但未找到 .app 文件"
+
+          APP="build/Build/Products/Release-iphoneos/LocSim.app"
+
+          if [ ! -d "$APP" ]; then
+            echo "ERROR: LocSim.app not found"
+
+            find build -name "*.app" -type d
+
             exit 1
           fi
-          echo "找到 App: $APP"
+
+          echo "Found app: $APP"
+
+          test -f "$APP/Info.plist"
+
+          rm -rf Payload
           mkdir -p Payload
+
           cp -R "$APP" Payload/
+
           zip -qr LocSim-unsigned.ipa Payload
+
+          echo "===== IPA Result ====="
           ls -lh LocSim-unsigned.ipa
+          unzip -l LocSim-unsigned.ipa | head -n 30
 
       - name: Upload IPA
         uses: actions/upload-artifact@v4
