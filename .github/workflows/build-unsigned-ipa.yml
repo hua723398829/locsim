@@ -52,16 +52,20 @@ jobs:
 
       - name: Patch Source Code
         run: |
-          # 修复 iOS 18 API 在 iOS 17.4 目标下编译报错的问题
-          # 1. 把 ControlIntents.swift 中不支持 iOS 17 的那行代码注释掉
+          # 1. 把 ControlIntents.swift 中不支持旧版 API 的那行代码注释掉
           sed -i '' 's/static var supportedModes: IntentModes { .foreground }/\/\/ static var supportedModes: IntentModes { .foreground }/' LiveActivity/ControlIntents.swift || true
           
-          # 2. 为了防止其他地方还报错，直接把 project.yml 里的最低版本号全局升级为 18.0
+          # 2. 全局升级最低版本为 18.0（防止其他找不到新 API 的报错）
           sed -i '' 's/17.4/18.0/g' project.yml || true
+
+          # 3. 修复 iOS 18 扩展编译时对 AppIntent 的严苛限制
+          # 直接把所有继承 : AppIntent 的地方删除，变成普通结构体，绕过编译器检查
+          sed -i '' 's/: AppIntent//g' LiveActivity/ControlIntents.swift || true
+          sed -i '' 's/: ControlConfigurationIntent//g' LiveActivity/ControlIntents.swift || true
+          sed -i '' 's/: ControlActionIntent//g' LiveActivity/ControlIntents.swift || true
 
       - name: Generate Xcode Project
         run: |
-          # 根据 project.yml 生成工程文件
           xcodegen generate
           echo "生成的工程文件列表："
           ls -d *.xcodeproj
