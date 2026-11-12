@@ -83,34 +83,59 @@ jobs:
           from pathlib import Path
           import re
 
-          matches = list(Path(".").rglob("ControlIntents.swift"))
+          intent_files = sorted(Path(".").rglob("*Intents.swift"))
 
-          if not matches:
-              raise SystemExit("ERROR: ControlIntents.swift not found")
+          if not intent_files:
+              raise SystemExit("ERROR: No Intents.swift files found")
 
-          for path in matches:
-              text = path.read_text()
+          pattern = re.compile(
+              r'(?m)^[ \t]*@available\(iOS\s+26\.0,\s*\*\)[ \t]*\r?\n'
+              r'[ \t]*static var supportedModes:\s*IntentModes\s*\{[^}\r\n]*\}[ \t]*(?:\r?\n)?'
+          )
 
-              pattern = (
-                  r'(?m)^[ \t]*@available\(iOS 26\.0,\s*\*\)'
-                  r'[ \t]*\n'
-                  r'[ \t]*static var supportedModes: IntentModes'
-                  r'[^\n]*\n?'
-              )
+          total_patched = 0
 
-              new_text, count = re.subn(pattern, "", text)
+          for path in intent_files:
+              source = path.read_text()
+              updated, count = pattern.subn("", source)
 
               if count:
-                  path.write_text(new_text)
-                  print(f"Patched: {path}")
-              else:
-                  print(f"WARNING: IntentModes declaration not matched in {path}")
+                  path.write_text(updated)
+                  total_patched += count
+                  print(f"Patched {count} declaration(s): {path}")
 
+          if total_patched == 0:
+              raise SystemExit("ERROR: No IntentModes declarations were patched")
+
+          for path in Path(".").rglob("*.swift"):
               if "IntentModes" in path.read_text():
-                  raise SystemExit(
-                      f"ERROR: IntentModes still exists in {path}"
-                  )
+                  raise SystemExit(f"ERROR: IntentModes still exists in {path}")
 
+          print(f"Successfully removed {total_patched} IntentModes declaration(s)")
+
+          print("===== Patch StateIntents dialog =====")
+
+          state_path = Path("LocSim/Intents/StateIntents.swift")
+
+          if not state_path.exists():
+              raise SystemExit("ERROR: StateIntents.swift not found")
+
+          state = state_path.read_text()
+
+          old = '        return .result(value: simulated, dialog: simulated ? "A location is simulated." : "No location is simulated.")'
+
+          new = '''        if simulated {
+                      return .result(value: true, dialog: "A location is simulated.")
+                  } else {
+                      return .result(value: false, dialog: "No location is simulated.")
+                  }'''
+
+          if old not in state:
+              raise SystemExit("ERROR: Original StateIntents dialog expression not found")
+
+          state_path.write_text(state.replace(old, new, 1))
+
+          print("StateIntents dialog patched successfully")
           PY
 
           echo "===== Verify Control Widgets ====="
@@ -169,9 +194,7 @@ jobs:
 
           if [ ! -d "$APP" ]; then
             echo "ERROR: LocSim.app not found"
-
             find build -name "*.app" -type d
-
             exit 1
           fi
 
