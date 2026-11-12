@@ -13,13 +13,44 @@ jobs:
 
       - name: Install Tools and Dependencies
         run: |
-          # 安装 XcodeGen 来生成 xcodeproj
+          # 安装 XcodeGen
           brew install xcodegen
           
-          # 运行作者的依赖拉取脚本（如果有的话）
+          # 运行作者的依赖拉取脚本
           if [ -f "tools/fetch-vendor.sh" ]; then
             echo "Running fetch-vendor.sh..."
             bash tools/fetch-vendor.sh || echo "脚本执行失败，但尝试继续"
+          fi
+          
+          # 手动确保 Frameworks/IDevice.xcframework 存在
+          mkdir -p Frameworks
+          if [ ! -d "Frameworks/IDevice.xcframework" ]; then
+            echo "Frameworks/IDevice.xcframework not found. Trying to fix..."
+            
+            # 查找下载下来的 zip 文件
+            FOUND_ZIP=$(find . -name "idevice-xcframework*.zip" | head -n 1)
+            if [ -n "$FOUND_ZIP" ]; then
+              echo "Found zip: $FOUND_ZIP, extracting..."
+              unzip -q "$FOUND_ZIP" -d temp_extract
+              XC_FRAMEWORK=$(find temp_extract -name "*.xcframework" | head -n 1)
+              if [ -n "$XC_FRAMEWORK" ]; then
+                mv "$XC_FRAMEWORK" "Frameworks/IDevice.xcframework"
+                echo "✅ Successfully placed IDevice.xcframework"
+              fi
+            else
+              # 如果没有 zip，尝试查找已经解压的 xcframework 文件夹
+              FOUND_DIR=$(find . -name "*.xcframework" -type d | head -n 1)
+              if [ -n "$FOUND_DIR" ]; then
+                echo "Found existing dir: $FOUND_DIR, moving..."
+                mv "$FOUND_DIR" "Frameworks/IDevice.xcframework"
+                echo "✅ Successfully placed IDevice.xcframework"
+              else
+                echo "❌ Error: Cannot find any xcframework zip or folder!"
+                ls -la
+              fi
+            fi
+          else
+             echo "✅ IDevice.xcframework already exists in Frameworks/"
           fi
 
       - name: Generate Xcode Project
@@ -33,13 +64,11 @@ jobs:
         run: |
           set -e
           
-          # 此时根目录已经有了 .xcodeproj
           PROJECT_FILE=$(find . -maxdepth 1 -name "*.xcodeproj" | head -n1)
           PROJECT_ARGS="-project $PROJECT_FILE"
           
           echo "使用的工程参数: $PROJECT_ARGS"
 
-          # 自动读取 scheme
           SCHEME=$(xcodebuild -list $PROJECT_ARGS 2>/dev/null | awk '/Schemes:/{flag=1;next} flag && NF{print $1; exit}')
           echo "使用的 scheme: $SCHEME"
 
@@ -57,7 +86,7 @@ jobs:
       - name: Package unsigned IPA
         run: |
           set -e
-          APP=$(find . -name "*.app" -path "*/Release-iphoneos/*" | head -n1)
+          APP=$(find . -name "*.app" -path "*/Release-iphoneos/*" | head -n 1)
           if [ -z "$APP" ]; then
             echo "❌ 编译成功，但未找到 .app 文件"
             exit 1
