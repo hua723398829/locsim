@@ -1,0 +1,62 @@
+name: Build unsigned IPA
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Show Xcode version
+        run: xcodebuild -version
+
+      - name: Build unsigned app
+        run: |
+          set -e
+
+          # 自动识别工程文件（.xcworkspace 优先，否则用 .xcodeproj）
+          if ls *.xcworkspace >/dev/null 2>&1; then
+            PROJECT_ARGS="-workspace $(ls -d *.xcworkspace | head -n1)"
+          elif ls *.xcodeproj >/dev/null 2>&1; then
+            PROJECT_ARGS="-project $(ls -d *.xcodeproj | head -n1)"
+          else
+            echo "未找到 .xcworkspace 或 .xcodeproj"
+            exit 1
+          fi
+
+          # 自动读取第一个 scheme
+          SCHEME=$(xcodebuild -list $PROJECT_ARGS 2>/dev/null | awk '/Schemes:/{flag=1;next} flag && NF{print $1; exit}')
+          echo "使用的工程参数: $PROJECT_ARGS"
+          echo "使用的 scheme: $SCHEME"
+
+          xcodebuild \
+            $PROJECT_ARGS \
+            -scheme "$SCHEME" \
+            -configuration Release \
+            -sdk iphoneos \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            build
+
+      - name: Package unsigned IPA
+        run: |
+          set -e
+          APP=$(find build/Build/Products/Release-iphoneos -maxdepth 1 -name "*.app" | head -n1)
+          echo "找到 App: $APP"
+          mkdir -p Payload
+          cp -R "$APP" Payload/
+          zip -qr LocSim-unsigned.ipa Payload
+          ls -lh LocSim-unsigned.ipa
+
+      - name: Upload IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: LocSim-unsigned-ipa
+          path: LocSim-unsigned.ipa
+          if-no-files-found: error
