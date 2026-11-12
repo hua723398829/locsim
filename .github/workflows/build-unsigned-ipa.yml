@@ -26,8 +26,6 @@ jobs:
           mkdir -p Frameworks
           if [ ! -d "Frameworks/IDevice.xcframework" ]; then
             echo "Frameworks/IDevice.xcframework not found. Trying to fix..."
-            
-            # 查找下载下来的 zip 文件
             FOUND_ZIP=$(find . -name "idevice-xcframework*.zip" | head -n 1)
             if [ -n "$FOUND_ZIP" ]; then
               echo "Found zip: $FOUND_ZIP, extracting..."
@@ -38,7 +36,6 @@ jobs:
                 echo "✅ Successfully placed IDevice.xcframework"
               fi
             else
-              # 如果没有 zip，尝试查找已经解压的 xcframework 文件夹
               FOUND_DIR=$(find . -name "*.xcframework" -type d | head -n 1)
               if [ -n "$FOUND_DIR" ]; then
                 echo "Found existing dir: $FOUND_DIR, moving..."
@@ -52,6 +49,15 @@ jobs:
           else
              echo "✅ IDevice.xcframework already exists in Frameworks/"
           fi
+
+      - name: Patch Source Code
+        run: |
+          # 修复 iOS 18 API 在 iOS 17.4 目标下编译报错的问题
+          # 1. 把 ControlIntents.swift 中不支持 iOS 17 的那行代码注释掉
+          sed -i '' 's/static var supportedModes: IntentModes { .foreground }/\/\/ static var supportedModes: IntentModes { .foreground }/' LiveActivity/ControlIntents.swift || true
+          
+          # 2. 为了防止其他地方还报错，直接把 project.yml 里的最低版本号全局升级为 18.0
+          sed -i '' 's/17.4/18.0/g' project.yml || true
 
       - name: Generate Xcode Project
         run: |
